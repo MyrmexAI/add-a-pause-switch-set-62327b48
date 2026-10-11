@@ -430,7 +430,8 @@ fn owner_pauses_and_unpauses() {
     let owner = ctx.owner.insecure_clone();
 
     ctx.set_paused(&owner, true).unwrap();
-    assert!(ctx.tip(10).is_err());
+    let err = ctx.tip(10).unwrap_err();
+    assert!(err.contains(ERR_PAUSED), "unexpected error: {err}");
     ctx.set_paused(&owner, false).unwrap();
     ctx.tip(10).unwrap();
     assert_eq!(ctx.token_balance(&ctx.vault), 10);
@@ -497,5 +498,6 @@ fn stranger_cannot_pause() {
     ctx.set_paused(&owner, true).unwrap();
     let err = ctx.set_paused(&stranger, false).unwrap_err();
     assert!(err.contains(ERR_UNAUTHORIZED), "unexpected error: {err}");
-    assert!(ctx.tip(10).is_err());
+    let err = ctx.tip(10).unwrap_err();
+    assert!(err.contains(ERR_PAUSED), "unexpected error: {err}");
 }
