@@ -27,6 +27,7 @@ mod entrypoint {
             2 => instructions::withdraw(program_id, accounts, data),
             3 => instructions::close_jar(program_id, accounts, data),
             4 => instructions::set_max_tip(program_id, accounts, data),
+            5 => instructions::set_paused(program_id, accounts, data),
             _ => Err(ProgramError::InvalidInstructionData),
         }
     }
@@ -38,6 +39,7 @@ pub enum TipJarError {
     Unauthorized = 1,
     VaultNotEmpty = 2,
     TipTooLarge = 3,
+    Paused = 4,
 }
 
 impl From<TipJarError> for ProgramError {

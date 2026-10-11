@@ -10,9 +10,11 @@ const MINT_OFFSET: usize = 33;
 const VAULT_OFFSET: usize = 65;
 const BUMP_OFFSET: usize = 97;
 const MAX_TIP_OFFSET: usize = 98;
+const PAUSED_OFFSET: usize = 106;
 
 /// discriminator (1) + owner (32) + mint (32) + vault (32) + bump (1) + max_tip (8, 0 = no limit)
-pub const JAR_LEN: usize = 106;
+/// + paused (1, 0 or 1)
+pub const JAR_LEN: usize = 107;
 
 /// Copy of the on-chain jar account, so no borrow is held across CPIs.
 pub struct Jar {
@@ -21,6 +23,7 @@ pub struct Jar {
     pub vault: Address,
     pub bump: u8,
     pub max_tip: u64,
+    pub paused: bool,
 }
 
 fn read_address(data: &[u8], offset: usize) -> Result<Address, ProgramError> {
@@ -50,6 +53,11 @@ impl Jar {
                     .try_into()
                     .map_err(|_| ProgramError::InvalidAccountData)?,
             ),
+            paused: match data[PAUSED_OFFSET] {
+                0 => false,
+                1 => true,
+                _ => return Err(ProgramError::InvalidAccountData),
+            },
         })
     }
 
@@ -64,6 +72,7 @@ impl Jar {
         data[VAULT_OFFSET..VAULT_OFFSET + 32].copy_from_slice(self.vault.as_array());
         data[BUMP_OFFSET] = self.bump;
         data[MAX_TIP_OFFSET..MAX_TIP_OFFSET + 8].copy_from_slice(&self.max_tip.to_le_bytes());
+        data[PAUSED_OFFSET] = self.paused as u8;
         Ok(())
     }
 }

@@ -15,11 +15,13 @@ const IX_TIP: u8 = 1;
 const IX_WITHDRAW: u8 = 2;
 const IX_CLOSE_JAR: u8 = 3;
 const IX_SET_MAX_TIP: u8 = 4;
+const IX_SET_PAUSED: u8 = 5;
 
 const ERR_ZERO_AMOUNT: &str = "Custom(0)";
 const ERR_UNAUTHORIZED: &str = "Custom(1)";
 const ERR_VAULT_NOT_EMPTY: &str = "Custom(2)";
 const ERR_TIP_TOO_LARGE: &str = "Custom(3)";
+const ERR_PAUSED: &str = "Custom(4)";
 const ERR_INSUFFICIENT_FUNDS: &str = "InsufficientFunds";
 
 const MINTED: u64 = 1_000;
@@ -169,6 +171,18 @@ impl Ctx {
         let ix = Instruction::new_with_bytes(
             self.program_id,
             &amount_data(IX_SET_MAX_TIP, max),
+            vec![
+                AccountMeta::new_readonly(signer.pubkey(), true),
+                AccountMeta::new(self.jar, false),
+            ],
+        );
+        self.send(ix, &[signer])
+    }
+
+    fn set_paused(&mut self, signer: &Keypair, paused: bool) -> Result<(), String> {
+        let ix = Instruction::new_with_bytes(
+            self.program_id,
+            &[IX_SET_PAUSED, paused as u8],
             vec![
                 AccountMeta::new_readonly(signer.pubkey(), true),
                 AccountMeta::new(self.jar, false),
@@ -407,4 +421,81 @@ fn stranger_cannot_set_max_tip() {
     );
     let err = ctx.send(ix, &[&stranger]).unwrap_err();
     assert!(err.contains("MissingRequiredSignature"), "unexpected error: {err}");
+}
+
+#[test]
+fn owner_pauses_and_unpauses() {
+    let mut ctx = setup();
+    ctx.initialize().unwrap();
+    let owner = ctx.owner.insecure_clone();
+
+    ctx.set_paused(&owner, true).unwrap();
+    assert!(ctx.tip(10).is_err());
+    ctx.set_paused(&owner, false).unwrap();
+    ctx.tip(10).unwrap();
+    assert_eq!(ctx.token_balance(&ctx.vault), 10);
+
+    // Pausing twice is idempotent.
+    ctx.set_paused(&owner, true).unwrap();
+    ctx.set_paused(&owner, true).unwrap();
+}
+
+#[test]
+fn tip_while_paused_fails() {
+    let mut ctx = setup();
+    ctx.initialize().unwrap();
+    let owner = ctx.owner.insecure_clone();
+    ctx.set_paused(&owner, true).unwrap();
+
+    let err = ctx.tip(100).unwrap_err();
+    assert!(err.contains(ERR_PAUSED), "unexpected error: {err}");
+    assert_eq!(ctx.token_balance(&ctx.vault), 0);
+    assert_eq!(ctx.token_balance(&ctx.tipper_ata), MINTED);
+}
+
+#[test]
+fn withdraw_while_paused_works() {
+    let mut ctx = setup();
+    ctx.initialize().unwrap();
+    ctx.tip(500).unwrap();
+
+    let owner = ctx.owner.insecure_clone();
+    ctx.set_paused(&owner, true).unwrap();
+
+    let owner_ata = ctx.owner_ata;
+    ctx.withdraw(&owner, owner_ata, 500).unwrap();
+    assert_eq!(ctx.token_balance(&ctx.vault), 0);
+    assert_eq!(ctx.token_balance(&ctx.owner_ata), 500);
+}
+
+#[test]
+fn stranger_cannot_pause() {
+    let mut ctx = setup();
+    ctx.initialize().unwrap();
+
+    let stranger = Keypair::new();
+    ctx.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let err = ctx.set_paused(&stranger, true).unwrap_err();
+    assert!(err.contains(ERR_UNAUTHORIZED), "unexpected error: {err}");
+    ctx.tip(10).unwrap();
+
+    // Owner's pubkey without its signature is rejected as well.
+    let ix = Instruction::new_with_bytes(
+        ctx.program_id,
+        &[IX_SET_PAUSED, 1],
+        vec![
+            AccountMeta::new_readonly(ctx.owner.pubkey(), false),
+            AccountMeta::new(ctx.jar, false),
+        ],
+    );
+    let err = ctx.send(ix, &[&stranger]).unwrap_err();
+    assert!(err.contains("MissingRequiredSignature"), "unexpected error: {err}");
+    ctx.tip(10).unwrap();
+
+    // A stranger cannot unpause either.
+    let owner = ctx.owner.insecure_clone();
+    ctx.set_paused(&owner, true).unwrap();
+    let err = ctx.set_paused(&stranger, false).unwrap_err();
+    assert!(err.contains(ERR_UNAUTHORIZED), "unexpected error: {err}");
+    assert!(ctx.tip(10).is_err());
 }
