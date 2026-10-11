@@ -107,6 +107,7 @@ pub fn initialize(program_id: &Address, accounts: &mut [AccountView], data: &[u8
         mint: mint_address,
         vault: expected_vault,
         bump: jar_bump,
+        max_tip: 0,
     }
     .store(jar)
 }
@@ -125,6 +126,9 @@ pub fn tip(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) -> P
     let amount = parse_amount(data)?;
 
     let jar_state = Jar::load(jar, program_id)?;
+    if jar_state.max_tip != 0 && amount > jar_state.max_tip {
+        return Err(TipJarError::TipTooLarge.into());
+    }
     if vault.address() != &jar_state.vault || source.address() == vault.address() {
         return Err(ProgramError::InvalidArgument);
     }
@@ -229,4 +233,29 @@ pub fn close_jar(program_id: &Address, accounts: &mut [AccountView], data: &[u8]
         .ok_or(ProgramError::ArithmeticOverflow)?;
     owner.set_lamports(new_owner_lamports);
     jar.close()
+}
+
+/// Accounts: owner (signer), jar (writable). Data: max tip (u64 LE, 0 = no limit).
+pub fn set_max_tip(program_id: &Address, accounts: &mut [AccountView], data: &[u8]) -> ProgramResult {
+    let [owner, jar] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !owner.is_signer() {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    let bytes: [u8; 8] = data
+        .try_into()
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let max_tip = u64::from_le_bytes(bytes);
+
+    if !jar.is_writable() {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let mut jar_state = Jar::load(jar, program_id)?;
+    if owner.address() != &jar_state.owner {
+        return Err(TipJarError::Unauthorized.into());
+    }
+    jar_state.max_tip = max_tip;
+    jar_state.store(jar)
 }

@@ -14,10 +14,12 @@ const IX_INITIALIZE: u8 = 0;
 const IX_TIP: u8 = 1;
 const IX_WITHDRAW: u8 = 2;
 const IX_CLOSE_JAR: u8 = 3;
+const IX_SET_MAX_TIP: u8 = 4;
 
 const ERR_ZERO_AMOUNT: &str = "Custom(0)";
 const ERR_UNAUTHORIZED: &str = "Custom(1)";
 const ERR_VAULT_NOT_EMPTY: &str = "Custom(2)";
+const ERR_TIP_TOO_LARGE: &str = "Custom(3)";
 const ERR_INSUFFICIENT_FUNDS: &str = "InsufficientFunds";
 
 const MINTED: u64 = 1_000;
@@ -158,6 +160,18 @@ impl Ctx {
                 AccountMeta::new(self.jar, false),
                 AccountMeta::new(self.vault, false),
                 AccountMeta::new_readonly(TOKEN_PROGRAM, false),
+            ],
+        );
+        self.send(ix, &[signer])
+    }
+
+    fn set_max_tip(&mut self, signer: &Keypair, max: u64) -> Result<(), String> {
+        let ix = Instruction::new_with_bytes(
+            self.program_id,
+            &amount_data(IX_SET_MAX_TIP, max),
+            vec![
+                AccountMeta::new_readonly(signer.pubkey(), true),
+                AccountMeta::new(self.jar, false),
             ],
         );
         self.send(ix, &[signer])
@@ -332,4 +346,65 @@ fn stranger_cannot_close_jar() {
 
     assert_eq!(ctx.lamports(&ctx.jar), jar_lamports);
     assert_eq!(ctx.lamports(&ctx.vault), vault_lamports);
+}
+
+#[test]
+fn owner_sets_max_tip_and_tip_at_limit_works() {
+    let mut ctx = setup();
+    ctx.initialize().unwrap();
+
+    let owner = ctx.owner.insecure_clone();
+    ctx.set_max_tip(&owner, 100).unwrap();
+
+    ctx.tip(100).unwrap();
+    ctx.tip(1).unwrap();
+    assert_eq!(ctx.token_balance(&ctx.vault), 101);
+}
+
+#[test]
+fn tip_above_max_fails() {
+    let mut ctx = setup();
+    ctx.initialize().unwrap();
+
+    let owner = ctx.owner.insecure_clone();
+    ctx.set_max_tip(&owner, 100).unwrap();
+
+    let err = ctx.tip(101).unwrap_err();
+    assert!(err.contains(ERR_TIP_TOO_LARGE), "unexpected error: {err}");
+    assert_eq!(ctx.token_balance(&ctx.vault), 0);
+    assert_eq!(ctx.token_balance(&ctx.tipper_ata), MINTED);
+
+    // Zero removes the limit again.
+    ctx.set_max_tip(&owner, 0).unwrap();
+    ctx.tip(101).unwrap();
+    assert_eq!(ctx.token_balance(&ctx.vault), 101);
+}
+
+#[test]
+fn stranger_cannot_set_max_tip() {
+    let mut ctx = setup();
+    ctx.initialize().unwrap();
+    let owner = ctx.owner.insecure_clone();
+    ctx.set_max_tip(&owner, 100).unwrap();
+
+    let stranger = Keypair::new();
+    ctx.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let err = ctx.set_max_tip(&stranger, 0).unwrap_err();
+    assert!(err.contains(ERR_UNAUTHORIZED), "unexpected error: {err}");
+
+    // The limit is unchanged.
+    let err = ctx.tip(101).unwrap_err();
+    assert!(err.contains(ERR_TIP_TOO_LARGE), "unexpected error: {err}");
+
+    // Owner's pubkey without its signature is rejected as well.
+    let ix = Instruction::new_with_bytes(
+        ctx.program_id,
+        &amount_data(IX_SET_MAX_TIP, 0),
+        vec![
+            AccountMeta::new_readonly(ctx.owner.pubkey(), false),
+            AccountMeta::new(ctx.jar, false),
+        ],
+    );
+    let err = ctx.send(ix, &[&stranger]).unwrap_err();
+    assert!(err.contains("MissingRequiredSignature"), "unexpected error: {err}");
 }
